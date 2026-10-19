@@ -67,6 +67,9 @@ class ConfTests(unittest.TestCase):
         s = g.teardown_script('wlan0_ap')
         self.assertIn('GW_CAP', s)
         self.assertIn('ipset destroy', s)
+        self.assertNotIn('ip_forward', s)                      # no prior -> untouched
+        s2 = g.teardown_script('wlan0_ap', prior_forward='0')
+        self.assertIn('sysctl -w net.ipv4.ip_forward=0', s2)   # prior restored
 
 class DnsTests(unittest.TestCase):
     def test_answer_bytes(self):
@@ -92,18 +95,14 @@ class PortalTests(unittest.TestCase):
         p = g.Portal(18080, got.append)
         p.start()
         time.sleep(0.4)
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *a, **k):
-                return None
-        opener = urllib.request.build_opener(NoRedirect)
         for path in ('/hotspot-detect.html', '/generate_204', '/connecttest.txt', '/anything'):
-            try:
-                opener.open('http://127.0.0.1:18080' + path, timeout=3)
-                self.fail('expected redirect')
-            except urllib.error.HTTPError as e:
-                self.assertEqual(e.code, 302)
-                self.assertEqual(e.headers['Location'], 'https://www.google.com')
-        self.assertEqual(got, ['127.0.0.1'] * 4)
+            r = urllib.request.urlopen('http://127.0.0.1:18080' + path, timeout=3)
+            self.assertEqual(r.status, 200)          # never 302: iOS would skip the splash
+            self.assertNotEqual(r.headers.get('Location'), 'https://www.google.com')
+            body = r.read()
+            self.assertIn(b'location.replace("https://www.google.com")', body)
+            self.assertIn(b'meta http-equiv="refresh"', body)
+        self.assertEqual(got, ['127.0.0.1'] * 4)     # every probe still auto-approves
         p.stop()
 
 class PlanTests(unittest.TestCase):
@@ -236,6 +235,36 @@ class Fix122Tests(unittest.TestCase):
         sh = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'install.sh')).read()
         self.assertIn('systemctl is-active --quiet dnsmasq', sh)
         self.assertIn('systemctl disable dnsmasq', sh)
+
+class ForwardRestoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._saved = (g.STATE_DIR, g.LEASES, g.PIDFILE, g.SNAPSHOT)
+        g.STATE_DIR = self.tmp
+        g.LEASES = os.path.join(self.tmp, 'dnsmasq.leases')
+        g.PIDFILE = os.path.join(self.tmp, 'pids.json')
+        g.SNAPSHOT = os.path.join(self.tmp, 'iptables.snapshot')
+    def tearDown(self):
+        g.STATE_DIR, g.LEASES, g.PIDFILE, g.SNAPSHOT = self._saved
+    def test_forward_saved_and_restored(self):
+        class LiveProc:
+            pid = 4545
+            def poll(self): return None
+            def terminate(self): pass
+        r = g.Runner(dry_run=True)
+        e = g.Engine(runner=r)
+        real = g.subprocess.Popen
+        g.subprocess.Popen = lambda *a, **k: LiveProc()
+        try:
+            e.start('wlan0', 'wlan0', 'wlan0_ap', 'pi wifi', '12345678', 6, 'g')
+            prior = open('/proc/sys/net/ipv4/ip_forward').read().strip()
+            self.assertEqual(open(os.path.join(self.tmp, 'ip_forward.prev')).read(), prior)
+            e.stop()
+        finally:
+            g.subprocess.Popen = real
+        cmds = [' '.join(c) for c in r.planned]
+        self.assertTrue(any(c.endswith('sysctl -w net.ipv4.ip_forward=%s >/dev/null' % prior) for c in cmds), cmds)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'ip_forward.prev')))
 
 if __name__ == '__main__':
     unittest.main()
