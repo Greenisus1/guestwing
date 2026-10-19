@@ -13,7 +13,7 @@ MIT, Greenisus1. Built with AI assistance from my design.
 """
 import curses, ipaddress, json, os, re, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse
 
-VERSION = '1.2.2'
+VERSION = '1.2.3'
 GUEST_NET = ipaddress.ip_network('192.168.50.0/24')
 AP_IP = '192.168.50.1'
 DHCP_LO, DHCP_HI = '192.168.50.100', '192.168.50.200'
@@ -171,7 +171,9 @@ def iptables_script(ap, uplink):
         'sysctl -w net.ipv4.ip_forward=1 >/dev/null',
     ]) + '\n'
 
-def teardown_script(ap):
+def teardown_script(ap, prior_forward=None):
+    tail = (['sysctl -w net.ipv4.ip_forward=%s >/dev/null' % prior_forward]
+            if prior_forward in ('0', '1') else [])
     return '\n'.join([
         'iptables -t nat -D PREROUTING -i %s -j GW_CAP 2>/dev/null || true' % ap,
         'iptables -t nat -F GW_CAP 2>/dev/null || true',
@@ -181,7 +183,7 @@ def teardown_script(ap):
         'iptables -X GW_FWD 2>/dev/null || true',
         "iptables-save | grep -v 'GW_CAP\\|GW_FWD\\|%s' | iptables-restore || true" % IPSET,
         'ipset destroy %s 2>/dev/null || true' % IPSET,
-    ]) + '\n'
+    ] + tail) + '\n'
 
 # ---------------------------------------------------------------- hijack DNS
 def dns_answer(packet, ip):
@@ -238,14 +240,17 @@ class Portal(threading.Thread):
             def log_message(self, *a):
                 pass
             def _go(self):
+                # Approve in the same response, but answer 200 with a page - a 302
+                # to an external site lets iOS/Android conclude "internet works"
+                # and never show the splash. The page renders in the splash and
+                # immediately forwards to google.com (meta refresh + JS).
                 ip = self.client_address[0]
                 hook(ip)
                 body = (b'<html><head><meta http-equiv="refresh" content="0;url=https://www.google.com">'
                         b'<title>Connected</title></head><body style="font-family:sans-serif;text-align:center;margin-top:4em">'
                         b'<h1>Connected!</h1><p>Taking you to <a href="https://www.google.com">google.com</a>...</p>'
                         b'<script>location.replace("https://www.google.com")</script></body></html>')
-                self.send_response(302)
-                self.send_header('Location', 'https://www.google.com')
+                self.send_response(200)
                 self.send_header('Content-Type', 'text/html')
                 self.send_header('Content-Length', str(len(body)))
                 self.send_header('Cache-Control', 'no-store')
@@ -284,6 +289,14 @@ class Engine:
         open(LEASES, 'a').close()
         self.r('iptables-save', '-f', SNAPSHOT)
         self.cfg = {'ap': ap, 'base': base, 'uplink': uplink, 'ssid': ssid}
+        try:
+            prior = open('/proc/sys/net/ipv4/ip_forward').read().strip()
+            if prior in ('0', '1'):
+                with open(os.path.join(STATE_DIR, 'ip_forward.prev'), 'w') as f:
+                    f.write(prior)
+                self._prior_forward = prior
+        except Exception:
+            pass
         self._created_ap = False
         try:
             self._start_inner(uplink, base, ap, ssid, psk, channel, hw_mode)
@@ -334,8 +347,16 @@ class Engine:
             pass
         if self.portal: self.portal.stop()
         if self.hijack: self.hijack.stop()
-        for line in teardown_script(ap).splitlines():
+        prior = getattr(self, '_prior_forward', None)
+        if prior is None:
+            try:
+                prior = open(os.path.join(STATE_DIR, 'ip_forward.prev')).read().strip()
+            except Exception:
+                prior = None
+        for line in teardown_script(ap, prior).splitlines():
             self.r('bash', '-c', line, ok_rc=(0, 1, 2))
+        try: os.remove(os.path.join(STATE_DIR, 'ip_forward.prev'))
+        except Exception: pass
         if created_ap:
             self.r('iw', 'dev', ap, 'del', ok_rc=(0, 1, 2))
         if os.path.exists(SNAPSHOT):
