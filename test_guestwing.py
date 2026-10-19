@@ -37,6 +37,13 @@ class ConfTests(unittest.TestCase):
     def test_hostapd_open(self):
         c = g.hostapd_conf('wlan0_ap', 'HomeNet', None, channel=6, hw_mode='g')
         self.assertNotIn('wpa=2', c)
+    def test_default_ssid(self):
+        self.assertEqual(g.DEFAULT_SSID, 'pi wifi')
+        c = g.hostapd_conf('wlan0_ap', g.DEFAULT_SSID, None)
+        self.assertIn('ssid=pi wifi', c)
+    def test_custom_ssid(self):
+        c = g.hostapd_conf('wlan0_ap', 'my guest net', 'pw12345')
+        self.assertIn('ssid=my guest net', c)
     def test_dnsmasq(self):
         c = g.dnsmasq_conf('wlan0_ap')
         self.assertIn('interface=wlan0_ap', c)
