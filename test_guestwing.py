@@ -187,5 +187,55 @@ class EnvAndFailureTests(unittest.TestCase):
         # and stop() afterwards is still safe/idempotent
         e.stop()
 
+class Fix122Tests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._saved = (g.STATE_DIR, g.LEASES, g.PIDFILE, g.SNAPSHOT)
+        g.STATE_DIR = self.tmp
+        g.LEASES = os.path.join(self.tmp, 'dnsmasq.leases')
+        g.PIDFILE = os.path.join(self.tmp, 'pids.json')
+        g.SNAPSHOT = os.path.join(self.tmp, 'iptables.snapshot')
+    def tearDown(self):
+        g.STATE_DIR, g.LEASES, g.PIDFILE, g.SNAPSHOT = self._saved
+    def test_dnsmasq_no_daemon(self):
+        captured = []
+        class LiveProc:
+            pid = 4343
+            def poll(self): return None   # alive
+            def terminate(self): pass
+        def fake_popen(argv, **k):
+            captured.append(argv)
+            return LiveProc()
+        e = g.Engine(runner=g.Runner(dry_run=True))
+        real = g.subprocess.Popen
+        g.subprocess.Popen = fake_popen
+        try:
+            e.start('wlan0', 'wlan0', 'wlan0_ap', 'pi wifi', '12345678', 6, 'g')
+        finally:
+            g.subprocess.Popen = real
+        dns = [a for a in captured if a[0] == 'dnsmasq'][0]
+        self.assertIn('--no-daemon', dns)
+        self.assertTrue(e.running)
+        e.stop()
+    def test_cleanup_kills_stray_dnsmasq(self):
+        import subprocess as sp
+        stray = sp.Popen(['sleep', '60'])
+        with open(os.path.join(self.tmp, 'dnsmasq.pid'), 'w') as f:
+            f.write(str(stray.pid))
+        e = g.Engine(runner=g.Runner(dry_run=True))
+        e._cleanup('wlan0_ap', False)
+        time.sleep(0.3)
+        self.assertIsNotNone(stray.poll())  # stray was terminated
+    def test_disable_system_dnsmasq(self):
+        r = g.Runner(dry_run=True)
+        g.disable_system_dnsmasq(r)
+        cmds = [' '.join(c) for c in r.planned]
+        self.assertIn('systemctl stop dnsmasq', cmds)
+        self.assertIn('systemctl disable dnsmasq', cmds)
+    def test_install_sh_guard(self):
+        sh = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'install.sh')).read()
+        self.assertIn('systemctl is-active --quiet dnsmasq', sh)
+        self.assertIn('systemctl disable dnsmasq', sh)
+
 if __name__ == '__main__':
     unittest.main()
