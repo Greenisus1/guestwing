@@ -13,7 +13,7 @@ MIT, Greenisus1. Built with AI assistance from my design.
 """
 import curses, ipaddress, json, os, re, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse
 
-VERSION = '1.2.1'
+VERSION = '1.2.2'
 GUEST_NET = ipaddress.ip_network('192.168.50.0/24')
 AP_IP = '192.168.50.1'
 DHCP_LO, DHCP_HI = '192.168.50.100', '192.168.50.200'
@@ -307,7 +307,7 @@ class Engine:
         self.procs = [
             subprocess.Popen(['hostapd', os.path.join(STATE_DIR, 'hostapd.conf')],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
-            subprocess.Popen(['dnsmasq', '-C', os.path.join(STATE_DIR, 'dnsmasq.conf')],
+            subprocess.Popen(['dnsmasq', '--no-daemon', '-C', os.path.join(STATE_DIR, 'dnsmasq.conf')],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
         time.sleep(1)
         for p in self.procs:
@@ -327,6 +327,11 @@ class Engine:
             try: p.terminate()
             except Exception: pass
         self.procs = []
+        try:
+            pid = int(open(os.path.join(STATE_DIR, 'dnsmasq.pid')).read().strip())
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
         if self.portal: self.portal.stop()
         if self.hijack: self.hijack.stop()
         for line in teardown_script(ap).splitlines():
@@ -363,7 +368,17 @@ class Engine:
 def ip_in_ipset(ip):
     return ip in out('ipset', 'list', IPSET)
 
-def ensure_deps(log=print):
+def disable_system_dnsmasq(runner):
+    # apt auto-starts a system dnsmasq on 0.0.0.0:53, which would hold the
+    # guest gateway's DNS port. Stop+disable it. Only called when WE installed
+    # dnsmasq this run - a pre-existing dnsmasq (e.g. Pi-hole) is left alone.
+    for cmd in (['systemctl', 'stop', 'dnsmasq'], ['systemctl', 'disable', 'dnsmasq']):
+        try:
+            runner(*cmd, ok_rc=(0, 1, 3))
+        except Exception:
+            pass
+
+def ensure_deps(log=print, runner=None):
     missing = [d for d in DEPS if not shutil.which(d)]
     if not missing:
         return []
@@ -371,6 +386,8 @@ def ensure_deps(log=print):
     subprocess.run(['apt-get', 'update', '-qq'], capture_output=True)
     pkgs = {'iwgetid': 'wireless-tools'}
     subprocess.run(['apt-get', 'install', '-y', '-qq'] + [pkgs.get(m, m) for m in missing])
+    if 'dnsmasq' in missing:
+        disable_system_dnsmasq(runner or Runner())
     return [d for d in DEPS if not shutil.which(d)]
 
 # ---------------------------------------------------------------- curses UI
@@ -497,6 +514,10 @@ def main():
         return 0
     if os.geteuid() != 0:
         os.execvp('sudo', ['sudo', sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+    still = ensure_deps()
+    if still:
+        print('could not install: %s - apt-get install them and retry' % ', '.join(still))
+        return 1
     left = curses.wrapper(ui)
     if left:
         print('guestwing: hotspot left stopped.')
