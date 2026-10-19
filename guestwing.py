@@ -13,11 +13,12 @@ MIT, Greenisus1. Built with AI assistance from my design.
 """
 import curses, ipaddress, json, os, re, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse
 
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 GUEST_NET = ipaddress.ip_network('192.168.50.0/24')
 AP_IP = '192.168.50.1'
 DHCP_LO, DHCP_HI = '192.168.50.100', '192.168.50.200'
 DEFAULT_SSID = 'pi wifi'
+DEFAULT_PSK = '12345678'
 PORTAL_PORT = 8080
 HIJACK_DNS_PORT = 5353
 IPSET = 'guestwing_ok'
@@ -380,7 +381,7 @@ def draw(scr, st):
         y += 1
     if not st['clients']:
         put(y, 4, '(none yet)', curses.A_DIM); y += 1
-    put(h - 2, 2, '[s] start/stop (2x)   [n] name   [q] quit', curses.A_REVERSE)
+    put(h - 2, 2, '[s] start/stop (2x)   [n] name   [p] password   [q] quit', curses.A_REVERSE)
     scr.refresh()
 
 def ui(scr):
@@ -389,14 +390,15 @@ def ui(scr):
     eng = Engine()
     uplink, base, ap, warn = plan_interfaces()
     cli_ssid = sys.argv[sys.argv.index('--ssid') + 1] if '--ssid' in sys.argv else None
+    cli_psk = sys.argv[sys.argv.index('--psk') + 1] if '--psk' in sys.argv else None
     ssid = cli_ssid or DEFAULT_SSID
-    cur = current_ssid()
-    psk = wifi_credentials(cur) if cur else None
+    psk = cli_psk if cli_psk is not None else DEFAULT_PSK
+    psk_src = 'custom' if cli_psk is not None else 'default pw'
     ch, mode = sta_channel(base) if base else (None, None)
     arm = None
     while True:
         st = {'state': 'RUNNING' if eng.running else 'STOPPED',
-              'ssid': ssid, 'sec': 'WPA2 cloned' if psk else 'open',
+              'ssid': ssid, 'sec': ('WPA2 ' + psk_src) if psk else 'open',
               'uplink': uplink or '-', 'ap': (ap or '-') + (' ch %s' % ch if ch else ''),
               'warn': warn, 'clients': eng.clients() if eng.running else []}
         draw(scr, st)
@@ -429,6 +431,23 @@ def ui(scr):
             if v:
                 ssid = v
             arm = None
+        elif k == ord('p') and not eng.running:
+            curses.echo()
+            scr.timeout(-1)
+            scr.addnstr(h - 3, 2, 'guest password (8+ chars, empty = open): ' + ' ' * 20, w - 4, 0)
+            scr.addnstr(h - 3, 2, 'guest password (8+ chars, empty = open): ', w - 4, curses.A_BOLD)
+            scr.refresh()
+            try:
+                v = scr.getstr(h - 3, 43, 32).decode().strip()
+            except Exception:
+                v = ''
+            curses.noecho()
+            scr.timeout(1000)
+            if v and len(v) >= 8:
+                psk, psk_src = v, 'custom'
+            elif v == '':
+                psk, psk_src = None, ''
+            arm = None
         elif k == ord('s'):
             if eng.running:
                 eng.stop(); arm = None
@@ -451,9 +470,9 @@ def main():
     if '--dry-run' in sys.argv:
         uplink, base, ap, warn = plan_interfaces()
         cli_ssid = sys.argv[sys.argv.index('--ssid') + 1] if '--ssid' in sys.argv else None
+        cli_psk = sys.argv[sys.argv.index('--psk') + 1] if '--psk' in sys.argv else None
         ssid = cli_ssid or DEFAULT_SSID
-        cur = current_ssid()
-        psk = wifi_credentials(cur) if cur else None
+        psk = cli_psk if cli_psk is not None else DEFAULT_PSK
         ch, mode = sta_channel(base) if base else (None, None)
         print('uplink=%s base=%s ap=%s channel=%s mode=%s warn=%s ssid=%s psk=%s'
               % (uplink, base, ap, ch, mode, warn, ssid, 'yes' if psk else 'no'))
