@@ -13,7 +13,7 @@ MIT, Greenisus1. Built with AI assistance from my design.
 """
 import curses, ipaddress, json, os, re, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 GUEST_NET = ipaddress.ip_network('192.168.50.0/24')
 AP_IP = '192.168.50.1'
 DHCP_LO, DHCP_HI = '192.168.50.100', '192.168.50.200'
@@ -283,8 +283,18 @@ class Engine:
         os.makedirs(STATE_DIR, exist_ok=True)
         open(LEASES, 'a').close()
         self.r('iptables-save', '-f', SNAPSHOT)
+        self.cfg = {'ap': ap, 'base': base, 'uplink': uplink, 'ssid': ssid}
+        self._created_ap = False
+        try:
+            self._start_inner(uplink, base, ap, ssid, psk, channel, hw_mode)
+        except Exception:
+            self._cleanup(ap, self._created_ap)
+            raise
+
+    def _start_inner(self, uplink, base, ap, ssid, psk, channel, hw_mode):
         if ap not in interfaces():
             self.r('iw', 'dev', base, 'interface', 'add', ap, 'type', '__ap')
+            self._created_ap = True
         with open(os.path.join(STATE_DIR, 'hostapd.conf'), 'w') as f:
             f.write(hostapd_conf(ap, ssid, psk, channel, hw_mode))
         with open(os.path.join(STATE_DIR, 'dnsmasq.conf'), 'w') as f:
@@ -310,25 +320,30 @@ class Engine:
         with open(PIDFILE, 'w') as f:
             json.dump({'pids': [p.pid for p in self.procs], 'ap': ap, 'base': base,
                        'uplink': uplink, 'ssid': ssid}, f)
-        self.cfg = {'ap': ap, 'base': base, 'uplink': uplink, 'ssid': ssid}
         self.running = True
 
-    def stop(self):
+    def _cleanup(self, ap, created_ap):
         for p in self.procs:
             try: p.terminate()
             except Exception: pass
+        self.procs = []
         if self.portal: self.portal.stop()
         if self.hijack: self.hijack.stop()
-        ap = self.cfg.get('ap')
-        if not ap and os.path.exists(PIDFILE):
-            ap = json.load(open(PIDFILE)).get('ap')
-        if ap:
-            for line in teardown_script(ap).splitlines():
-                self.r('bash', '-c', line, ok_rc=(0, 1, 2))
-            if ap.endswith('_ap'):
-                self.r('iw', 'dev', ap, 'del', ok_rc=(0, 1, 2))
+        for line in teardown_script(ap).splitlines():
+            self.r('bash', '-c', line, ok_rc=(0, 1, 2))
+        if created_ap:
+            self.r('iw', 'dev', ap, 'del', ok_rc=(0, 1, 2))
         if os.path.exists(SNAPSHOT):
             self.r('iptables-restore', SNAPSHOT, ok_rc=(0, 1, 2))
+
+    def stop(self):
+        ap = self.cfg.get('ap')
+        created = getattr(self, '_created_ap', False)
+        if not ap and os.path.exists(PIDFILE):
+            d = json.load(open(PIDFILE))
+            ap, created = d.get('ap'), True
+        if ap:
+            self._cleanup(ap, created)
         try: os.remove(PIDFILE)
         except Exception: pass
         self.running = False
@@ -391,8 +406,8 @@ def ui(scr):
     uplink, base, ap, warn = plan_interfaces()
     cli_ssid = sys.argv[sys.argv.index('--ssid') + 1] if '--ssid' in sys.argv else None
     cli_psk = sys.argv[sys.argv.index('--psk') + 1] if '--psk' in sys.argv else None
-    ssid = cli_ssid or DEFAULT_SSID
-    psk = cli_psk if cli_psk is not None else DEFAULT_PSK
+    ssid = cli_ssid or os.environ.get('GW_SSID') or DEFAULT_SSID
+    psk = cli_psk if cli_psk is not None else (os.environ['GW_PSK'] if 'GW_PSK' in os.environ else DEFAULT_PSK)
     psk_src = 'custom' if cli_psk is not None else 'default pw'
     ch, mode = sta_channel(base) if base else (None, None)
     arm = None
@@ -471,8 +486,8 @@ def main():
         uplink, base, ap, warn = plan_interfaces()
         cli_ssid = sys.argv[sys.argv.index('--ssid') + 1] if '--ssid' in sys.argv else None
         cli_psk = sys.argv[sys.argv.index('--psk') + 1] if '--psk' in sys.argv else None
-        ssid = cli_ssid or DEFAULT_SSID
-        psk = cli_psk if cli_psk is not None else DEFAULT_PSK
+        ssid = cli_ssid or os.environ.get('GW_SSID') or DEFAULT_SSID
+        psk = cli_psk if cli_psk is not None else (os.environ['GW_PSK'] if 'GW_PSK' in os.environ else DEFAULT_PSK)
         ch, mode = sta_channel(base) if base else (None, None)
         print('uplink=%s base=%s ap=%s channel=%s mode=%s warn=%s ssid=%s psk=%s'
               % (uplink, base, ap, ch, mode, warn, ssid, 'yes' if psk else 'no'))
