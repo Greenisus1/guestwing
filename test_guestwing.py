@@ -41,6 +41,11 @@ class ConfTests(unittest.TestCase):
         self.assertEqual(g.DEFAULT_SSID, 'pi wifi')
         c = g.hostapd_conf('wlan0_ap', g.DEFAULT_SSID, None)
         self.assertIn('ssid=pi wifi', c)
+    def test_default_psk(self):
+        self.assertEqual(g.DEFAULT_PSK, '12345678')
+        c = g.hostapd_conf('wlan0_ap', g.DEFAULT_SSID, g.DEFAULT_PSK)
+        self.assertIn('wpa_passphrase=12345678', c)
+        self.assertIn('wpa=2', c)
     def test_custom_ssid(self):
         c = g.hostapd_conf('wlan0_ap', 'my guest net', 'pw12345')
         self.assertIn('ssid=my guest net', c)
