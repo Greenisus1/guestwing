@@ -13,10 +13,11 @@ MIT, Greenisus1. Built with AI assistance from my design.
 """
 import curses, ipaddress, json, os, re, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 GUEST_NET = ipaddress.ip_network('192.168.50.0/24')
 AP_IP = '192.168.50.1'
 DHCP_LO, DHCP_HI = '192.168.50.100', '192.168.50.200'
+DEFAULT_SSID = 'pi wifi'
 PORTAL_PORT = 8080
 HIJACK_DNS_PORT = 5353
 IPSET = 'guestwing_ok'
@@ -379,7 +380,7 @@ def draw(scr, st):
         y += 1
     if not st['clients']:
         put(y, 4, '(none yet)', curses.A_DIM); y += 1
-    put(h - 2, 2, '[s] start/stop (2x to confirm)   [q] quit', curses.A_REVERSE)
+    put(h - 2, 2, '[s] start/stop (2x)   [n] name   [q] quit', curses.A_REVERSE)
     scr.refresh()
 
 def ui(scr):
@@ -387,8 +388,10 @@ def ui(scr):
     scr.timeout(1000)
     eng = Engine()
     uplink, base, ap, warn = plan_interfaces()
-    ssid = current_ssid() or 'Guestwing'
-    psk = wifi_credentials(ssid) if current_ssid() else None
+    cli_ssid = sys.argv[sys.argv.index('--ssid') + 1] if '--ssid' in sys.argv else None
+    ssid = cli_ssid or DEFAULT_SSID
+    cur = current_ssid()
+    psk = wifi_credentials(cur) if cur else None
     ch, mode = sta_channel(base) if base else (None, None)
     arm = None
     while True:
@@ -411,6 +414,21 @@ def ui(scr):
                 arm = 'quit'
             else:
                 break
+        elif k == ord('n') and not eng.running:
+            curses.echo()
+            scr.timeout(-1)
+            scr.addnstr(h - 3, 2, 'hotspot name: ' + ' ' * 40, w - 4, 0)
+            scr.addnstr(h - 3, 2, 'hotspot name: ', w - 4, curses.A_BOLD)
+            scr.refresh()
+            try:
+                v = scr.getstr(h - 3, 16, 32).decode().strip()
+            except Exception:
+                v = ''
+            curses.noecho()
+            scr.timeout(1000)
+            if v:
+                ssid = v
+            arm = None
         elif k == ord('s'):
             if eng.running:
                 eng.stop(); arm = None
@@ -432,8 +450,10 @@ def ui(scr):
 def main():
     if '--dry-run' in sys.argv:
         uplink, base, ap, warn = plan_interfaces()
-        ssid = current_ssid() or 'Guestwing'
-        psk = wifi_credentials(ssid) if current_ssid() else None
+        cli_ssid = sys.argv[sys.argv.index('--ssid') + 1] if '--ssid' in sys.argv else None
+        ssid = cli_ssid or DEFAULT_SSID
+        cur = current_ssid()
+        psk = wifi_credentials(cur) if cur else None
         ch, mode = sta_channel(base) if base else (None, None)
         print('uplink=%s base=%s ap=%s channel=%s mode=%s warn=%s ssid=%s psk=%s'
               % (uplink, base, ap, ch, mode, warn, ssid, 'yes' if psk else 'no'))
