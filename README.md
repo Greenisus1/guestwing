@@ -14,9 +14,9 @@ guestwing
 
 (or `bash app-store.sh` from the store). It re-execs with sudo; hostapd, dnsmasq, ipset and friends auto-install.
 
-- Press `n` to set a custom hotspot name and `p` for a custom password (defaults: `pi wifi` / `12345678`; empty password = open network). Or start with `guestwing --ssid "my name" --psk "mypass"`.
+- Press `n` to set a custom hotspot name and `p` for a custom password (defaults: `pi wifi` / `12345678`; empty password = open network). Or start with `guestwing --ssid "my name" --psk "mypass"` or set `GW_SSID` / `GW_PSK` in the environment.
 - Press `s` twice to start. First press shows exactly what will happen: the clone SSID and channel. Your own connection is never reconfigured.
-- Press `s` again to stop. Stopping tears down hostapd/dnsmasq and restores iptables from a snapshot taken at start.
+- Press `s` again to stop. Stopping tears down hostapd/dnsmasq and restores iptables from a snapshot taken at start. If starting itself fails partway (for example the radio refuses AP mode), the partial setup is rolled back automatically.
 - `q` quits; if the hotspot is running it asks twice, then stops everything.
 
 ## How it works
