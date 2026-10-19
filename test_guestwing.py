@@ -1,4 +1,4 @@
-import json, os, socket, struct, sys, tempfile, threading, time, unittest, urllib.request
+import contextlib, io, json, os, socket, struct, sys, tempfile, threading, time, unittest, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import guestwing as g
 
@@ -138,6 +138,54 @@ class EngineTests(unittest.TestCase):
         e.approve('8.8.8.8')  # outside guest net: ignored
         self.assertEqual(len(planned), 1)
         self.assertIn('192.168.50.123', planned[0])
+
+class EnvAndFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._saved = (g.STATE_DIR, g.LEASES, g.PIDFILE, g.SNAPSHOT)
+        g.STATE_DIR = self.tmp
+        g.LEASES = os.path.join(self.tmp, 'dnsmasq.leases')
+        g.PIDFILE = os.path.join(self.tmp, 'pids.json')
+        g.SNAPSHOT = os.path.join(self.tmp, 'iptables.snapshot')
+    def tearDown(self):
+        g.STATE_DIR, g.LEASES, g.PIDFILE, g.SNAPSHOT = self._saved
+    def test_env_ssid_psk(self):
+        os.environ['GW_SSID'] = 'env net'
+        os.environ['GW_PSK'] = 'envpass99'
+        argv = sys.argv
+        sys.argv = ['guestwing.py', '--dry-run']
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                g.main()
+            first = buf.getvalue().splitlines()[0]
+            self.assertIn('ssid=env net', first)
+            self.assertIn('psk=yes', first)
+            self.assertIn('wpa_passphrase=envpass99', buf.getvalue())
+        finally:
+            sys.argv = argv
+            del os.environ['GW_SSID'], os.environ['GW_PSK']
+    def test_failed_start_cleans_up(self):
+        class FakeProc:
+            pid = 4242
+            def poll(self): return 0       # exited immediately = hostapd failed
+            def terminate(self): pass
+        r = g.Runner(dry_run=True)
+        e = g.Engine(runner=r)
+        real_popen = g.subprocess.Popen
+        g.subprocess.Popen = lambda *a, **k: FakeProc()
+        try:
+            with self.assertRaises(RuntimeError):
+                e.start('wlan0', 'wlan0', 'wlan0_ap', 'pi wifi', '12345678', 6, 'g')
+        finally:
+            g.subprocess.Popen = real_popen
+        cmds = [' '.join(c) for c in r.planned]
+        # partial state torn down: GW chains flushed, virtual AP deleted
+        self.assertTrue(any('GW_CAP' in c for c in cmds), cmds)
+        self.assertTrue(any('iw dev wlan0_ap del' in c for c in cmds), cmds)
+        self.assertFalse(e.running)
+        # and stop() afterwards is still safe/idempotent
+        e.stop()
 
 if __name__ == '__main__':
     unittest.main()
