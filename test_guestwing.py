@@ -106,6 +106,10 @@ class PortalTests(unittest.TestCase):
         p.stop()
 
 class PlanTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = (g.interfaces, g.is_wireless, g.default_route_ifaces, g.sta_channel)
+    def tearDown(self):
+        g.interfaces, g.is_wireless, g.default_route_ifaces, g.sta_channel = self._saved
     def test_single_radio_clone(self):
         g.interfaces = lambda: ['eth0', 'wlan0']
         g.is_wireless = lambda i: i == 'wlan0'
@@ -265,6 +269,33 @@ class ForwardRestoreTests(unittest.TestCase):
         cmds = [' '.join(c) for c in r.planned]
         self.assertTrue(any(c.endswith('sysctl -w net.ipv4.ip_forward=%s >/dev/null' % prior) for c in cmds), cmds)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, 'ip_forward.prev')))
+
+class StaChannelTests(unittest.TestCase):
+    def _with_out(self, link_text, iwgetid_text=''):
+        real = g.out
+        def fake(*a):
+            if a[:3] == ('iw', 'dev', 'wlan0'):
+                return link_text
+            if a[0] == 'iwgetid':
+                return iwgetid_text
+            return ''
+        g.out = fake
+        self.addCleanup(setattr, g, 'out', real)
+    def test_freq_plain(self):
+        self._with_out('Connected to aa:bb:cc:dd:ee:ff\n\tfreq: 2437\n\tsignal: -40 dBm\n')
+        self.assertEqual(g.sta_channel('wlan0'), (6, 'g'))
+    def test_freq_decimal(self):
+        self._with_out('\tfreq: 5180.0\n')
+        self.assertEqual(g.sta_channel('wlan0'), (36, 'a'))
+    def test_channel_text_fallback(self):
+        self._with_out('Connected to aa:bb\n\tchannel 11 (2462 MHz)\n')
+        self.assertEqual(g.sta_channel('wlan0'), (11, 'g'))
+    def test_iwgetid_fallback(self):
+        self._with_out('Connected to aa:bb\n\tsignal: -50 dBm\n', '1\n')
+        self.assertEqual(g.sta_channel('wlan0'), (1, 'g'))
+    def test_no_match(self):
+        self._with_out('Not connected.\n')
+        self.assertEqual(g.sta_channel('wlan0'), (None, None))
 
 if __name__ == '__main__':
     unittest.main()
