@@ -13,7 +13,7 @@ MIT, Greenisus1. Built with AI assistance from my design.
 """
 import curses, ipaddress, json, os, re, shutil, signal, socket, struct, subprocess, sys, tempfile, threading, time, urllib.parse
 
-VERSION = '1.2.3'
+VERSION = '1.2.4'
 GUEST_NET = ipaddress.ip_network('192.168.50.0/24')
 AP_IP = '192.168.50.1'
 DHCP_LO, DHCP_HI = '192.168.50.100', '192.168.50.200'
@@ -100,15 +100,27 @@ def parse_wpa_conf(text):
         creds[m.group(1)] = p.group(1) if p else (None if km and 'NONE' in km.group(1) else None)
     return creds
 
-def sta_channel(iface):
-    """(channel, hw_mode) of the iface's current association, from iw link."""
-    m = re.search(r'freq:\s*(\d+)', out('iw', 'dev', iface, 'link'))
-    if not m:
-        return None, None
-    f = int(m.group(1))
+def _freq_to_chan(f):
     if f < 3000:
         return (f - 2407) // 5, 'g'
     return (f - 5000) // 5, 'a'
+
+def sta_channel(iface):
+    """(channel, hw_mode) of the iface's current association. iw output varies
+    by version/driver, so try several shapes before giving up."""
+    txt = out('iw', 'dev', iface, 'link')
+    m = re.search(r'freq:\s*([\d.]+)', txt)
+    if m:
+        return _freq_to_chan(int(float(m.group(1))))
+    m = re.search(r'channel\s+(\d+)', txt, re.I)          # "channel 6 (2437 MHz)"
+    if m:
+        ch = int(m.group(1))
+        return ch, ('g' if ch <= 14 else 'a')
+    c = out('iwgetid', '--channel', iface).strip()          # fallback tool
+    if c.isdigit():
+        ch = int(c)
+        return ch, ('g' if ch <= 14 else 'a')
+    return None, None
 
 def plan_interfaces():
     """Clone mode: uplink = the interface carrying the default route (his
